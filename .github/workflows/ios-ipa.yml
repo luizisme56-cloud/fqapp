@@ -1,0 +1,155 @@
+name: iOS IPA
+
+# 产出未签名 IPA（Runner.app 打成 Payload/），App Store / 自签工具之后再签。
+#
+# 为什么单独一个 workflow：android-apk.yml 和 windows.yml 都跑在 Linux/Windows
+# runner 上，而 iOS 只能在 macOS runner 上编。上游一直没有 iOS 的 CI job，所以
+# 仓库里只有 ios/ 工程和 IOS.md，却从来没有发布过 IPA。
+#
+# 未签名 = 不需要证书、不需要 DEVELOPMENT_TEAM、不需要任何 secret，
+# 免费公开仓库也能跑；产物用 Sideloadly / AltStore / SideStore 自签即可安装。
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+    paths: &ios_paths
+      - 'lib/**'
+      - 'ios/**'
+      - 'native/**'
+      - 'rust/**'
+      - 'assets/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - 'analysis_options.yaml'
+      - 'flutter_rust_bridge.yaml'
+      - 'scripts/build_rust_ios.sh'
+      - 'scripts/generate_ios_app_icon.py'
+      - '.github/workflows/ios-ipa.yml'
+  pull_request:
+    paths: *ios_paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 必须与 pubspec.lock / android-apk.yml 保持一致：pubspec.lock 按 3.47 解析，
+  # 换版本会让 --enforce-lockfile 失败。Xcode 27 的适配补丁在 3.47.0 才进。
+  FLUTTER_VERSION: '3.47.9'
+  # 与 rust/Cargo.toml 里 flutter_rust_bridge = "=2.13.0" 对应，codegen 与 crate 必须同版本。
+  FRB_VERSION: '2.13.0'
+  # IOS.md 记录的验证版本。GitHub 的 macos-* runner 预装 Rust，但版本会漂，
+  # 显式钉住才能复现作者的构建。
+  RUST_VERSION: '1.99.1'
+  APP_NAME: fqapp
+
+jobs:
+  build-ios:
+    name: Build unsigned IPA
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Show runner toolchain
+        run: |
+          sw_vers
+          xcodebuild -version || true
+          xcode-select -p || true
+          pod --version || true
+
+      # 选最新的稳定 Xcode，不硬编码版本号：runner 镜像更新时路径会变。
+      - name: Select newest stable Xcode
+        run: |
+          ls /Applications | grep -E '^Xcode.*\.app$' || true
+          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)/Contents/Developer"
+          xcodebuild -version
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: aarch64-apple-ios
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      # IOS.md：Xcode 27 + SPM 有已知构建失败，必须关掉。
+      - name: Disable Swift Package Manager
+        run: flutter config --no-enable-swift-package-manager
+
+      - name: Resolve dependencies
+        run: flutter pub get --enforce-lockfile
+
+      - name: Install flutter_rust_bridge_codegen
+        run: cargo install flutter_rust_bridge_codegen --version "$FRB_VERSION" --locked
+
+      # 生成 iOS 用的 1024 无 alpha 图标（脚本按 assets/branding/app_icon_source.png 出图）。
+      # 只在图标源缺失时才跳过，其余错误照常失败，不静默降级。
+      - name: Generate iOS app icon
+        run: |
+          if [ -f assets/branding/app_icon_source.png ]; then
+            python3 scripts/generate_ios_app_icon.py
+          else
+            echo "::warning::assets/branding/app_icon_source.png 缺失，沿用仓库里的图标"
+          fi
+
+      # Team ID 不入库，未签名构建不需要它；占位值让 xcconfig 的 include 能解析。
+      # CI 里绝不写自己的 Team，见 IOS.md「别在 Xcode Signing 页里再选一次 Team」。
+      - name: Provide placeholder signing config
+        run: cp ios/Flutter/Signing.xcconfig.example ios/Flutter/Signing.xcconfig
+
+      # Rust 核心 → ios/Frameworks/libfqapi_core.a（iOS 不允许 dlopen，静态链进主二进制）
+      - name: Build Rust core (staticlib, device arm64)
+        run: ./scripts/build_rust_ios.sh
+
+      - name: Pod install
+        run: |
+          cd ios
+          pod install --repo-update
+
+      - name: Build iOS release (no codesign)
+        run: flutter build ios --release --no-codesign
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          APP="build/ios/iphoneos/Runner.app"
+          test -d "$APP"
+          rm -rf build/ios/pack && mkdir -p build/ios/pack/Payload
+          ditto "$APP" build/ios/pack/Payload/Runner.app
+          cd build/ios/pack
+          zip -qry "$GITHUB_WORKSPACE/${APP_NAME}_ios_unsigned.ipa" Payload
+          cd "$GITHUB_WORKSPACE"
+          shasum -a 256 "${APP_NAME}_ios_unsigned.ipa" > "${APP_NAME}_ios_unsigned.ipa.sha256"
+          cat "${APP_NAME}_ios_unsigned.ipa.sha256"
+          unzip -l "${APP_NAME}_ios_unsigned.ipa" | head -20
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ env.APP_NAME }}-ios-unsigned-${{ github.sha }}
+          path: |
+            ${{ env.APP_NAME }}_ios_unsigned.ipa
+            ${{ env.APP_NAME }}_ios_unsigned.ipa.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      # 打 tag（v*）推上来时顺手附到 Release，等于让仓库终于有现成 IPA 可下。
+      - name: Attach IPA to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.APP_NAME }}_ios_unsigned.ipa
+            ${{ env.APP_NAME }}_ios_unsigned.ipa.sha256
+          fail_on_unmatched_files: true
