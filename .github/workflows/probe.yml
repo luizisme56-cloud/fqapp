@@ -1,0 +1,25 @@
+name: runner probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        os: [macos-15-intel, macos-26, macos-15, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    steps:
+      - name: Report image and Xcode
+        run: |
+          echo "runner=${{ matrix.os }}"
+          sw_vers
+          ls /Applications | grep -E '^Xcode' || true
+          xcodebuild -version || true
+          xcrun --sdk iphoneos --show-sdk-version || true
