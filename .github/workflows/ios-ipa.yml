@@ -51,7 +51,7 @@ env:
 jobs:
   build-ios:
     name: Build unsigned IPA
-    runs-on: macos-14
+    runs-on: macos-15-intel
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -65,12 +65,18 @@ jobs:
           xcode-select -p || true
           pod --version || true
 
-      # 选最新的稳定 Xcode，不硬编码版本号：runner 镜像更新时路径会变。
+      # 选最新的 Xcode，不硬编码版本号：镜像里同时装了 Xcode 16.x / 26.x，更新时路径会变。
+      # macos-15 (arm64) 在这个账号上长期抢不到 runner，macos-15-intel 可以，且带 Xcode 26.3
+      # （Xcode 15.4 的 SDK 缺 NWPath.isUltraConstrained 等 iOS 26 API，编译不过）。
       - name: Select newest stable Xcode
         run: |
           ls /Applications | grep -E '^Xcode.*\.app$' || true
-          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)/Contents/Developer"
+          XC="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)"
+          [ -n "$XC" ] || XC="$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          echo "selecting $XC"
+          sudo xcode-select -s "$XC/Contents/Developer"
           xcodebuild -version
+          echo "iphoneos SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
 
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
