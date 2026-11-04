@@ -93,6 +93,14 @@ jobs:
       - name: Install flutter_rust_bridge_codegen
         run: cargo install flutter_rust_bridge_codegen --version "$FRB_VERSION" --locked
 
+      # scripts/generate_app_icons.py 头部写明依赖 Pillow >= 9.1（Image.Resampling）。
+      # runner 上的 python3 是 Homebrew 的，PEP 668 下可能需要 --break-system-packages。
+      - name: Install Pillow (icon generator dependency)
+        run: |
+          python3 -m pip install --user "Pillow>=9.1" \
+            || python3 -m pip install --break-system-packages "Pillow>=9.1"
+          python3 -c "import PIL; print('Pillow', PIL.__version__)"
+
       # 生成 iOS 用的 1024 无 alpha 图标（脚本按 assets/branding/app_icon_source.png 出图）。
       # 只在图标源缺失时才跳过，其余错误照常失败，不静默降级。
       - name: Generate iOS app icon
