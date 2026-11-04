@@ -118,7 +118,7 @@ jobs:
 
       # Rust 核心 → ios/Frameworks/libfqapi_core.a（iOS 不允许 dlopen，静态链进主二进制）
       - name: Build Rust core (staticlib, device arm64)
-        run: ./scripts/build_rust_ios.sh
+        run: bash ./scripts/build_rust_ios.sh
 
       - name: Pod install
         run: |
