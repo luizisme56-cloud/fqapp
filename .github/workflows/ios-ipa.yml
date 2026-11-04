@@ -51,7 +51,7 @@ env:
 jobs:
   build-ios:
     name: Build unsigned IPA
-    runs-on: macos-15
+    runs-on: macos-14
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -124,6 +124,31 @@ jobs:
         run: |
           cd ios
           pod install --repo-update
+
+      # macos-15（Xcode 16+）在这个账号上长期抢不到 runner，只能用 macos-14 的 Xcode 15.4。
+      # 但 Swift 5.10 不接受「调用参数列表的尾随逗号」（Swift 6.1 才支持），
+      # 而 Pigeon 生成的 messages.g.swift 里就有 `type: Int,` / `suiteName: ...,` 这种写法，
+      # 会报 "Unexpected ',' separator"。这里在构建前把这些尾随逗号改掉。
+      # 只动生成文件；不改版本、不改 lockfile。
+      - name: Patch Pigeon trailing commas (Xcode 15 / Swift 5.10)
+        run: |
+          python3 - <<'PY'
+          import pathlib, re
+          roots = [pathlib.Path.home() / '.pub-cache', pathlib.Path('ios/Pods')]
+          total = 0
+          for root in roots:
+              if not root.is_dir():
+                  continue
+              for f in root.rglob('messages.g.swift'):
+                  src = f.read_text(encoding='utf-8')
+                  # 只去掉紧贴右括号的尾随逗号，正常参数分隔符不会匹配到
+                  out = re.sub(r',(\s*)\)', r'\1)', src)
+                  if out != src:
+                      f.write_text(out, encoding='utf-8')
+                      total += 1
+                      print('patched', f)
+          print(f'patched {total} file(s)')
+          PY
 
       - name: Build iOS release (no codesign)
         run: flutter build ios --release --no-codesign
